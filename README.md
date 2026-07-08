@@ -41,3 +41,6 @@ YANDEX_TOKEN=ваш_токен
 ## Автор
 
 RusskiyOkypant
+
+p.s.
+нейросети рулят
