@@ -1,0 +1,55 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+ENV/
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Кеш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pycache
+*.pyc
+
+# Резервные копии
+backups/
+*.encrypted.bak
+
+# Файлы данных (пароли, конфиги с токенами)
+data/passwords.encrypted
+data/config.json
+.env
+
+# Патчи и временные файлы
+*.patch
+*.diff
+unnamed.patch
+*.tmp
+*.log
+
+# Документация (собранная)
+docs/_build/
+
+# Файлы IDE (VSCode, Sublime и др.)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Сборки и дистрибутивы
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Мусор
+folderlist.txt
+alllist.txt
