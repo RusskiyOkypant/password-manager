@@ -643,7 +643,7 @@ class PasswordManager:
             all_backups = self.list_backups(backup_dir)
             if len(all_backups) > limit:
                 for old in all_backups[limit:]:
-                    os.remove(os.path.join(backup_dir, old))
+                    os.remove(os.path.join(backup_dir, old['name']))  # <--- исправлено
             return backup_path
         except Exception as e:
             print(f"Ошибка создания резервной копии: {e}")

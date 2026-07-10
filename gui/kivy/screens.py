@@ -117,6 +117,8 @@ class UnlockScreen(Screen):
             return
         if self.app.manager.unlock_vault(password):
             self.app.main_screen.refresh_services()
+            # Проверка конфликта синхронизации
+            self.app.main_screen.check_conflict()
             self.app.screen_manager.current = 'main'
         else:
             self.app.show_notification('Неверный пароль', 'red')
@@ -128,7 +130,7 @@ class MainScreen(Screen):
         super().__init__(**kwargs)
         self.current_service = None
         self._refresh_scheduled = False
-        self.current_query = ''  # для поиска
+        self.current_query = ''
 
         main_layout = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
 
@@ -195,6 +197,9 @@ class MainScreen(Screen):
         self.add_widget(main_layout)
         self.app.main_screen = self
         self.bind(on_enter=self.on_enter)
+
+        # Применяем тему после создания
+        self.apply_theme(self.app._dark_theme)
 
     def _update_separator_rect(self, instance, value):
         if hasattr(self, 'separator_rect'):
@@ -271,6 +276,11 @@ class MainScreen(Screen):
             self.sync_button.background_color = get_color_from_hex('#FF9800')
         else:
             self.sync_button.background_color = get_color_from_hex('#F44336')
+
+    def apply_theme(self, dark):
+        """Применяет тему к списку сервисов (перерисовывает)"""
+        # Просто обновляем список, чтобы цвета кнопок изменились
+        self.refresh_services()
 
     def show_service_details(self, service_name):
         self.current_service = service_name
@@ -420,10 +430,10 @@ class MainScreen(Screen):
         delete_btn.bind(on_press=lambda x: self.show_delete_service(service_name))
         actions_layout.add_widget(delete_btn)
 
-        # Кнопка настроек (добавляем в конец)
+        # Кнопка настроек (открывает полное меню)
         settings_btn = BlueButton(text='⚙️ Настройки', font_size='14sp',
                                   size_hint_y=None, height=dp(45))
-        settings_btn.bind(on_press=lambda x: self.show_settings_popup())
+        settings_btn.bind(on_press=lambda x: self.show_full_settings_popup())
         actions_layout.add_widget(settings_btn)
 
         details_layout.add_widget(actions_layout)
@@ -444,6 +454,99 @@ class MainScreen(Screen):
             app.show_notification('Пароль скопирован в буфер обмена', 'green')
             app.manager.update_last_accessed(service_name)
             self.refresh_services()
+
+    # ---------- Действия с паролем ----------
+    def generate_pending_password(self, service_name):
+        new_pw = self.app.manager.generate_pending_password(service_name)
+        if new_pw:
+            Clipboard.copy(new_pw)
+            self.show_service_details(service_name)
+            self.app.show_notification(
+                'Пароль скопирован в буфер обмена. Вставьте его на сайте, затем нажмите "Подтвердить смену".',
+                'blue', duration=5
+            )
+        else:
+            self.app.show_notification('Не удалось сгенерировать пароль', 'red')
+
+    def confirm_password_change(self, service_name):
+        if self.app.manager.confirm_password_change(service_name):
+            self.refresh_services()
+            self.show_service_details(service_name)
+            self.app.show_notification('Пароль успешно обновлён', 'green')
+        else:
+            self.app.show_notification('Не удалось подтвердить смену', 'red')
+
+    def cancel_password_change(self, service_name):
+        self.app.manager.cancel_password_change(service_name)
+        self.refresh_services()
+        self.show_service_details(service_name)
+        self.app.show_notification('Смена пароля отменена', 'orange')
+
+    def set_manual_password(self, service_name):
+        manual_pw = self.manual_password_input.text.strip()
+        if not manual_pw:
+            self.app.show_notification('Введите пароль', 'red')
+            return
+        new_pw = self.app.manager.generate_pending_password(service_name, custom_password=manual_pw)
+        if new_pw:
+            self.manual_password_input.text = ''
+            self.show_service_details(service_name)
+            self.app.show_notification(
+                'Пароль установлен как временный. Подтвердите или отмените смену.',
+                'blue'
+            )
+        else:
+            self.app.show_notification('Не удалось установить пароль', 'red')
+
+    # ---------- История паролей ----------
+    def show_password_history(self, service_name):
+        history = self.app.manager.get_service_history(service_name)
+        if not history:
+            self.app.show_notification('История паролей пуста', 'orange')
+            return
+
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(5))
+        scroll = ScrollView(size_hint=(1, 0.9))
+        list_layout = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(5))
+        list_layout.bind(minimum_height=list_layout.setter('height'))
+        for entry in reversed(history):
+            dt = datetime.fromisoformat(entry['changed_at']).strftime("%d.%m.%Y %H:%M")
+            password = entry['password']
+            row = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(40), spacing=dp(5))
+            row.add_widget(Label(text=dt, size_hint_x=0.4, color=(1, 1, 1, 1)))
+            pw_label = Label(text='*' * min(len(password), 10), size_hint_x=0.3, color=(1, 1, 1, 1))
+            row.add_widget(pw_label)
+            show_btn = BlueButton(text='👁', size_hint_x=0.15, height=dp(30))
+            copy_btn = BlueButton(text='📋', size_hint_x=0.15, height=dp(30))
+
+            show_flag = [False]
+            def toggle_show(lbl=pw_label, pw=password, flag=show_flag):
+                if flag[0]:
+                    lbl.text = '*' * min(len(pw), 10)
+                    flag[0] = False
+                else:
+                    lbl.text = pw
+                    flag[0] = True
+            show_btn.bind(on_press=lambda x: toggle_show())
+
+            def copy_pw(pw=password):
+                Clipboard.copy(pw)
+                self.app.show_notification('Пароль скопирован', 'green')
+            copy_btn.bind(on_press=lambda x: copy_pw())
+
+            row.add_widget(show_btn)
+            row.add_widget(copy_btn)
+            list_layout.add_widget(row)
+
+        scroll.add_widget(list_layout)
+        content.add_widget(scroll)
+        close_btn = GrayButton(text='Закрыть', size_hint=(1, None), height=dp(40))
+        close_btn.bind(on_press=lambda x: popup.dismiss())
+        content.add_widget(close_btn)
+
+        popup = DarkPopup(title=f'История паролей: {service_name}', content=content,
+                          size_hint=(0.9, 0.7))
+        popup.open()
 
     # ---------- Всплывающие окна для добавления, изменения, удаления ----------
     def show_add_service(self, instance):
@@ -650,98 +753,6 @@ class MainScreen(Screen):
         popup = DarkPopup(title='Удаление сервиса', content=content, size_hint=(0.9, 0.6))
         popup.open()
 
-    # ---------- Действия с паролем ----------
-    def generate_pending_password(self, service_name):
-        new_pw = self.app.manager.generate_pending_password(service_name)
-        if new_pw:
-            Clipboard.copy(new_pw)
-            self.show_service_details(service_name)
-            self.app.show_notification(
-                'Пароль скопирован в буфер обмена. Вставьте его на сайте, затем нажмите "Подтвердить смену".',
-                'blue', duration=5
-            )
-        else:
-            self.app.show_notification('Не удалось сгенерировать пароль', 'red')
-
-    def confirm_password_change(self, service_name):
-        if self.app.manager.confirm_password_change(service_name):
-            self.refresh_services()
-            self.show_service_details(service_name)
-            self.app.show_notification('Пароль успешно обновлён', 'green')
-        else:
-            self.app.show_notification('Не удалось подтвердить смену', 'red')
-
-    def cancel_password_change(self, service_name):
-        self.app.manager.cancel_password_change(service_name)
-        self.refresh_services()
-        self.show_service_details(service_name)
-        self.app.show_notification('Смена пароля отменена', 'orange')
-
-    def set_manual_password(self, service_name):
-        manual_pw = self.manual_password_input.text.strip()
-        if not manual_pw:
-            self.app.show_notification('Введите пароль', 'red')
-            return
-        new_pw = self.app.manager.generate_pending_password(service_name, custom_password=manual_pw)
-        if new_pw:
-            self.manual_password_input.text = ''
-            self.show_service_details(service_name)
-            self.app.show_notification(
-                'Пароль установлен как временный. Подтвердите или отмените смену.',
-                'blue'
-            )
-        else:
-            self.app.show_notification('Не удалось установить пароль', 'red')
-
-    def show_password_history(self, service_name):
-        history = self.app.manager.get_service_history(service_name)
-        if not history:
-            self.app.show_notification('История паролей пуста', 'orange')
-            return
-
-        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(5))
-        scroll = ScrollView(size_hint=(1, 0.9))
-        list_layout = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(5))
-        list_layout.bind(minimum_height=list_layout.setter('height'))
-        for entry in reversed(history):
-            dt = datetime.fromisoformat(entry['changed_at']).strftime("%d.%m.%Y %H:%M")
-            password = entry['password']
-            row = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(40), spacing=dp(5))
-            row.add_widget(Label(text=dt, size_hint_x=0.4, color=(1, 1, 1, 1)))
-            pw_label = Label(text='*' * min(len(password), 10), size_hint_x=0.3, color=(1, 1, 1, 1))
-            row.add_widget(pw_label)
-            show_btn = BlueButton(text='👁', size_hint_x=0.15, height=dp(30))
-            copy_btn = BlueButton(text='📋', size_hint_x=0.15, height=dp(30))
-
-            show_flag = [False]
-            def toggle_show(lbl=pw_label, pw=password, flag=show_flag):
-                if flag[0]:
-                    lbl.text = '*' * min(len(pw), 10)
-                    flag[0] = False
-                else:
-                    lbl.text = pw
-                    flag[0] = True
-            show_btn.bind(on_press=lambda x: toggle_show())
-
-            def copy_pw(pw=password):
-                Clipboard.copy(pw)
-                self.app.show_notification('Пароль скопирован', 'green')
-            copy_btn.bind(on_press=lambda x: copy_pw())
-
-            row.add_widget(show_btn)
-            row.add_widget(copy_btn)
-            list_layout.add_widget(row)
-
-        scroll.add_widget(list_layout)
-        content.add_widget(scroll)
-        close_btn = GrayButton(text='Закрыть', size_hint=(1, None), height=dp(40))
-        close_btn.bind(on_press=lambda x: popup.dismiss())
-        content.add_widget(close_btn)
-
-        popup = DarkPopup(title=f'История паролей: {service_name}', content=content,
-                          size_hint=(0.9, 0.7))
-        popup.open()
-
     def show_sync_info(self, instance):
         status_text, status_color = self.app.manager.get_sync_status()
         content = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(10))
@@ -763,4 +774,400 @@ class MainScreen(Screen):
         content.add_widget(ok_btn)
 
         popup = DarkPopup(title='Синхронизация', content=content, size_hint=(0.8, 0.4))
+        popup.open()
+
+    # ---------- НОВЫЕ МЕТОДЫ ДЛЯ РАСШИРЕННОЙ ФУНКЦИОНАЛЬНОСТИ ----------
+
+    def show_full_settings_popup(self):
+        """Главное меню настроек"""
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(5))
+        content.add_widget(Label(text='Настройки', font_size='18sp', color=(1,1,1,1)))
+
+        btn_change_master = BlueButton(text='🔑 Сменить мастер-пароль', size_hint_y=None, height=dp(40))
+        btn_change_master.bind(on_press=lambda x: self.show_change_master_password_popup())
+        content.add_widget(btn_change_master)
+
+        btn_export_import = BlueButton(text='📤 Экспорт/Импорт', size_hint_y=None, height=dp(40))
+        btn_export_import.bind(on_press=lambda x: self.show_export_import_popup())
+        content.add_widget(btn_export_import)
+
+        btn_password_gen = BlueButton(text='⚙️ Параметры генерации', size_hint_y=None, height=dp(40))
+        btn_password_gen.bind(on_press=lambda x: self.show_password_settings_popup())
+        content.add_widget(btn_password_gen)
+
+        btn_backup = BlueButton(text='💾 Резервные копии', size_hint_y=None, height=dp(40))
+        btn_backup.bind(on_press=lambda x: self.show_backup_manager_popup())
+        content.add_widget(btn_backup)
+
+        btn_theme = BlueButton(text='🌓 Переключить тему', size_hint_y=None, height=dp(40))
+        btn_theme.bind(on_press=lambda x: self.app.toggle_theme())
+        content.add_widget(btn_theme)
+
+        btn_close = GrayButton(text='Закрыть', size_hint_y=None, height=dp(40))
+        btn_close.bind(on_press=lambda x: popup.dismiss())
+        content.add_widget(btn_close)
+
+        popup = DarkPopup(title='Меню настроек', content=content, size_hint=(0.9, 0.7))
+        popup.open()
+
+    # ---------- Смена мастер-пароля ----------
+    def show_change_master_password_popup(self):
+        from kivy.uix.modalview import ModalView
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
+        content.add_widget(Label(text='Смена мастер-пароля', font_size='16sp', color=(1,1,1,1)))
+        content.add_widget(Label(text='Старый пароль:', color=(1,1,1,1)))
+        old_pw = TextInput(password=True, multiline=False, size_hint_y=None, height=dp(40))
+        content.add_widget(old_pw)
+        content.add_widget(Label(text='Новый пароль:', color=(1,1,1,1)))
+        new_pw = TextInput(password=True, multiline=False, size_hint_y=None, height=dp(40))
+        content.add_widget(new_pw)
+        content.add_widget(Label(text='Подтвердите новый пароль:', color=(1,1,1,1)))
+        confirm_pw = TextInput(password=True, multiline=False, size_hint_y=None, height=dp(40))
+        content.add_widget(confirm_pw)
+
+        def change(btn):
+            old = old_pw.text
+            new = new_pw.text
+            confirm = confirm_pw.text
+            if not old or not new or not confirm:
+                self.app.show_notification('Заполните все поля', 'red')
+                return
+            if new != confirm:
+                self.app.show_notification('Пароли не совпадают', 'red')
+                return
+            if len(new) < 4:
+                self.app.show_notification('Пароль должен быть не менее 4 символов', 'red')
+                return
+            if self.app.manager.change_master_password(old, new):
+                self.app.show_notification('Мастер-пароль изменён', 'green')
+                modal.dismiss()
+            else:
+                self.app.show_notification('Неверный старый пароль', 'red')
+
+        btn_frame = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(10))
+        btn_ok = GreenButton(text='Изменить')
+        btn_ok.bind(on_press=change)
+        btn_cancel = GrayButton(text='Отмена')
+        btn_cancel.bind(on_press=lambda x: modal.dismiss())
+        btn_frame.add_widget(btn_ok)
+        btn_frame.add_widget(btn_cancel)
+        content.add_widget(btn_frame)
+
+        modal = ModalView(size_hint=(0.9, 0.6))
+        modal.add_widget(content)
+        modal.open()
+
+    # ---------- Экспорт/Импорт ----------
+    def show_export_import_popup(self):
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
+        content.add_widget(Label(text='Экспорт/импорт данных', font_size='16sp', color=(1,1,1,1)))
+        btn_export_json = BlueButton(text='Экспорт в JSON', size_hint_y=None, height=dp(40))
+        btn_export_json.bind(on_press=lambda x: self.export_data('json'))
+        content.add_widget(btn_export_json)
+        btn_export_csv = BlueButton(text='Экспорт в CSV', size_hint_y=None, height=dp(40))
+        btn_export_csv.bind(on_press=lambda x: self.export_data('csv'))
+        content.add_widget(btn_export_csv)
+        btn_import = BlueButton(text='Импорт из файла', size_hint_y=None, height=dp(40))
+        btn_import.bind(on_press=lambda x: self.import_data())
+        content.add_widget(btn_import)
+        btn_close = GrayButton(text='Закрыть', size_hint_y=None, height=dp(40))
+        btn_close.bind(on_press=lambda x: popup.dismiss())
+        content.add_widget(btn_close)
+
+        popup = DarkPopup(title='Экспорт/Импорт', content=content, size_hint=(0.9, 0.6))
+        popup.open()
+
+    def export_data(self, format_type):
+        password = self.ask_master_password()
+        if password is None:
+            return
+
+        from kivy.uix.filechooser import FileChooserListView
+        from kivy.uix.modalview import ModalView
+        import os
+
+        content = BoxLayout(orientation='vertical')
+        filechooser = FileChooserListView(path='/storage/emulated/0/Download' if os.name == 'android' else '.')
+        content.add_widget(filechooser)
+
+        def on_select(btn):
+            selection = filechooser.selection
+            if not selection:
+                self.app.show_notification('Выберите папку', 'orange')
+                return
+            path = selection[0]
+            if os.path.isdir(path):
+                filename = f'passwords_export.{format_type}'
+                full_path = os.path.join(path, filename)
+            else:
+                full_path = path
+            if self.app.manager.export_data(password, format_type, full_path):
+                self.app.show_notification(f'Данные экспортированы в {full_path}', 'green')
+                modal.dismiss()
+            else:
+                self.app.show_notification('Ошибка экспорта', 'red')
+
+        btn_save = BlueButton(text='Сохранить', size_hint_y=None, height=dp(40))
+        btn_save.bind(on_press=on_select)
+        btn_cancel = GrayButton(text='Отмена', size_hint_y=None, height=dp(40))
+        btn_cancel.bind(on_press=lambda x: modal.dismiss())
+        content.add_widget(btn_save)
+        content.add_widget(btn_cancel)
+
+        modal = ModalView(size_hint=(0.9, 0.8))
+        modal.add_widget(content)
+        modal.open()
+
+    def import_data(self):
+        password = self.ask_master_password()
+        if password is None:
+            return
+
+        from kivy.uix.filechooser import FileChooserListView
+        from kivy.uix.modalview import ModalView
+        import os
+
+        content = BoxLayout(orientation='vertical')
+        filechooser = FileChooserListView(path='/storage/emulated/0/Download' if os.name == 'android' else '.')
+        content.add_widget(filechooser)
+
+        def on_select(btn):
+            selection = filechooser.selection
+            if not selection:
+                self.app.show_notification('Выберите файл', 'orange')
+                return
+            file_path = selection[0]
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext == '.json':
+                format_type = 'json'
+            elif ext == '.csv':
+                format_type = 'csv'
+            else:
+                self.app.show_notification('Неподдерживаемый формат', 'red')
+                return
+            # Спрашиваем, объединять или заменять
+            merge_popup = DarkPopup(title='Импорт', content=BoxLayout(orientation='vertical'))
+            merge_popup.content.add_widget(Label(text='Объединить с существующими данными?', color=(1,1,1,1)))
+            btn_merge = GreenButton(text='Объединить', size_hint_y=None, height=dp(40))
+            btn_replace = RedButton(text='Заменить', size_hint_y=None, height=dp(40))
+            btn_cancel = GrayButton(text='Отмена', size_hint_y=None, height=dp(40))
+
+            def do_import(merge):
+                if self.app.manager.import_data(file_path, password, format_type, merge):
+                    self.app.show_notification('Импорт выполнен', 'green')
+                    self.refresh_services()
+                    merge_popup.dismiss()
+                    modal.dismiss()
+                else:
+                    self.app.show_notification('Ошибка импорта', 'red')
+
+            btn_merge.bind(on_press=lambda x: do_import(True))
+            btn_replace.bind(on_press=lambda x: do_import(False))
+            btn_cancel.bind(on_press=lambda x: merge_popup.dismiss())
+
+            merge_popup.content.add_widget(btn_merge)
+            merge_popup.content.add_widget(btn_replace)
+            merge_popup.content.add_widget(btn_cancel)
+            merge_popup.open()
+
+        btn_select = BlueButton(text='Выбрать', size_hint_y=None, height=dp(40))
+        btn_select.bind(on_press=on_select)
+        btn_cancel = GrayButton(text='Отмена', size_hint_y=None, height=dp(40))
+        btn_cancel.bind(on_press=lambda x: modal.dismiss())
+        content.add_widget(btn_select)
+        content.add_widget(btn_cancel)
+
+        modal = ModalView(size_hint=(0.9, 0.8))
+        modal.add_widget(content)
+        modal.open()
+
+    def ask_master_password(self):
+        """Диалог запроса мастер-пароля, возвращает пароль или None"""
+        from kivy.uix.modalview import ModalView
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
+        content.add_widget(Label(text='Введите мастер-пароль для подтверждения:', color=(1,1,1,1)))
+        pw_input = TextInput(password=True, multiline=False, size_hint_y=None, height=dp(40))
+        content.add_widget(pw_input)
+        result = [None]
+
+        def confirm(btn):
+            result[0] = pw_input.text
+            modal.dismiss()
+
+        def cancel(btn):
+            modal.dismiss()
+
+        btn_frame = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(10))
+        btn_ok = GreenButton(text='OK')
+        btn_ok.bind(on_press=confirm)
+        btn_cancel = GrayButton(text='Отмена')
+        btn_cancel.bind(on_press=cancel)
+        btn_frame.add_widget(btn_ok)
+        btn_frame.add_widget(btn_cancel)
+        content.add_widget(btn_frame)
+
+        modal = ModalView(size_hint=(0.9, 0.4))
+        modal.add_widget(content)
+        modal.open()
+        modal.wait_for_close()
+        return result[0]
+
+    # ---------- Управление резервными копиями ----------
+    def show_backup_manager_popup(self):
+        backups = self.app.manager.list_backups()
+        if not backups:
+            self.app.show_notification('Резервные копии не найдены', 'orange')
+            return
+
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(5))
+        content.add_widget(Label(text='Резервные копии', font_size='16sp', color=(1,1,1,1)))
+        scroll = ScrollView(size_hint_y=0.8)
+        list_layout = BoxLayout(orientation='vertical', size_hint_y=None)
+        list_layout.bind(minimum_height=list_layout.setter('height'))
+        for b in backups:
+            row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(5))
+            row.add_widget(Label(text=f"{b['date']}  {b['name']}", color=(1,1,1,1), size_hint_x=0.7))
+            btn_restore = GreenButton(text='Восст', size_hint_x=0.15, height=dp(30))
+            btn_restore.bind(on_press=lambda x, name=b['name']: self.restore_backup(name, backups, popup))
+            btn_delete = RedButton(text='Удал', size_hint_x=0.15, height=dp(30))
+            btn_delete.bind(on_press=lambda x, name=b['name']: self.delete_backup(name, backups, popup))
+            row.add_widget(btn_restore)
+            row.add_widget(btn_delete)
+            list_layout.add_widget(row)
+        scroll.add_widget(list_layout)
+        content.add_widget(scroll)
+        btn_close = GrayButton(text='Закрыть', size_hint_y=None, height=dp(40))
+        btn_close.bind(on_press=lambda x: popup.dismiss())
+        content.add_widget(btn_close)
+
+        popup = DarkPopup(title='Управление резервными копиями', content=content, size_hint=(0.9, 0.8))
+        popup.open()
+
+    def restore_backup(self, backup_name, backups, parent_popup):
+        confirm_popup = DarkPopup(title='Подтверждение', content=BoxLayout(orientation='vertical'))
+        confirm_popup.content.add_widget(Label(text=f'Восстановить {backup_name}?', color=(1,1,1,1)))
+        btn_yes = GreenButton(text='Да', size_hint_y=None, height=dp(40))
+        btn_yes.bind(on_press=lambda x: self._do_restore(backup_name, parent_popup, confirm_popup))
+        btn_no = GrayButton(text='Нет', size_hint_y=None, height=dp(40))
+        btn_no.bind(on_press=lambda x: confirm_popup.dismiss())
+        confirm_popup.content.add_widget(btn_yes)
+        confirm_popup.content.add_widget(btn_no)
+        confirm_popup.open()
+
+    def _do_restore(self, backup_name, parent_popup, confirm_popup):
+        if self.app.manager.restore_backup(backup_name):
+            self.app.show_notification('Данные восстановлены', 'green')
+            self.refresh_services()
+            parent_popup.dismiss()
+            confirm_popup.dismiss()
+        else:
+            self.app.show_notification('Ошибка восстановления', 'red')
+
+    def delete_backup(self, backup_name, backups, parent_popup):
+        import os
+        for b in backups:
+            if b['name'] == backup_name:
+                try:
+                    os.remove(b['path'])
+                    self.app.show_notification('Копия удалена', 'green')
+                    parent_popup.dismiss()
+                    self.show_backup_manager_popup()
+                except Exception as e:
+                    self.app.show_notification(f'Ошибка удаления: {e}', 'red')
+                break
+
+    # ---------- Настройки генерации пароля ----------
+    def show_password_settings_popup(self):
+        from utils.config import load_config, save_config
+        config = load_config()
+
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(5))
+        content.add_widget(Label(text='Параметры генерации', font_size='16sp', color=(1,1,1,1)))
+
+        # Длина
+        length_box = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(5))
+        length_box.add_widget(Label(text='Длина:', color=(1,1,1,1), size_hint_x=0.3))
+        length_spin = TextInput(text=str(config.get('password_length', 20)), input_filter='int', multiline=False, size_hint_x=0.7)
+        length_box.add_widget(length_spin)
+        content.add_widget(length_box)
+
+        # Чекбоксы – используем ToggleButton
+        use_symbols = ToggleButton(text='Спецсимволы', state='down' if config.get('use_symbols', True) else 'normal')
+        use_digits = ToggleButton(text='Цифры', state='down' if config.get('use_digits', True) else 'normal')
+        use_uppercase = ToggleButton(text='Заглавные', state='down' if config.get('use_uppercase', True) else 'normal')
+        use_lowercase = ToggleButton(text='Строчные', state='down' if config.get('use_lowercase', True) else 'normal')
+        content.add_widget(use_symbols)
+        content.add_widget(use_digits)
+        content.add_widget(use_uppercase)
+        content.add_widget(use_lowercase)
+
+        def save(btn):
+            try:
+                length = int(length_spin.text)
+            except:
+                length = 20
+            new_config = {
+                'password_length': length,
+                'use_symbols': use_symbols.state == 'down',
+                'use_digits': use_digits.state == 'down',
+                'use_uppercase': use_uppercase.state == 'down',
+                'use_lowercase': use_lowercase.state == 'down'
+            }
+            current = load_config()
+            current.update(new_config)
+            save_config(current)
+            self.app.show_notification('Настройки сохранены', 'green')
+            popup.dismiss()
+
+        btn_frame = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(10))
+        btn_save = GreenButton(text='Сохранить')
+        btn_save.bind(on_press=save)
+        btn_cancel = GrayButton(text='Отмена')
+        btn_cancel.bind(on_press=lambda x: popup.dismiss())
+        btn_frame.add_widget(btn_save)
+        btn_frame.add_widget(btn_cancel)
+        content.add_widget(btn_frame)
+
+        popup = DarkPopup(title='Настройки генерации', content=content, size_hint=(0.9, 0.6))
+        popup.open()
+
+    # ---------- Обработка конфликта синхронизации ----------
+    def check_conflict(self):
+        if hasattr(self.app.manager, '_conflict') and self.app.manager._conflict:
+            self.app.manager._conflict = False
+            self.show_conflict_dialog()
+
+    def show_conflict_dialog(self):
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
+        content.add_widget(Label(text='Конфликт синхронизации', font_size='16sp', color=(1,1,1,1)))
+        content.add_widget(Label(text='Облачная версия новее, но есть локальные изменения.\nВыберите версию:', color=(1,1,1,1)))
+        btn_local = GreenButton(text='Локальная', size_hint_y=None, height=dp(40))
+        btn_remote = BlueButton(text='Облачная', size_hint_y=None, height=dp(40))
+        btn_cancel = GrayButton(text='Отмена', size_hint_y=None, height=dp(40))
+
+        def choose_local(btn):
+            if self.app.manager.resolve_conflict('local'):
+                self.app.show_notification('Выбрана локальная версия', 'green')
+                self.refresh_services()
+                popup.dismiss()
+            else:
+                self.app.show_notification('Ошибка сохранения локальной', 'red')
+
+        def choose_remote(btn):
+            if self.app.manager.resolve_conflict('remote'):
+                self.app.show_notification('Выбрана облачная версия', 'green')
+                self.refresh_services()
+                popup.dismiss()
+            else:
+                self.app.show_notification('Ошибка загрузки облачной', 'red')
+
+        btn_local.bind(on_press=choose_local)
+        btn_remote.bind(on_press=choose_remote)
+        btn_cancel.bind(on_press=lambda x: popup.dismiss())
+
+        content.add_widget(btn_local)
+        content.add_widget(btn_remote)
+        content.add_widget(btn_cancel)
+
+        popup = DarkPopup(title='Конфликт', content=content, size_hint=(0.9, 0.5))
         popup.open()

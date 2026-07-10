@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import os
+import sys
 import time
 from datetime import datetime
 from core.password_manager import PasswordManager
@@ -8,9 +9,21 @@ from gui.tkinter.screens import CreateVaultScreen, UnlockScreen, MainScreen
 from gui.tkinter.widgets import NotificationFrame
 from gui.tkinter.utils import center_window
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+def get_project_root():
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    else:
+        current = Path(__file__).resolve()
+        for parent in current.parents:
+            if (parent / 'core').exists() or (parent / 'data').exists():
+                return parent
+        return current.parent
 
+base_dir = get_project_root()
+dotenv_path = base_dir / 'data' / '.env'
+load_dotenv(dotenv_path)
 
 class TkinterApp:
     def __init__(self):
