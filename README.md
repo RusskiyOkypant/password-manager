@@ -87,7 +87,7 @@ pip install -r requirements.txt
 
 Автор
 
-[Ваше имя или ник]
+RusskiyOkypant
 Лицензия
 
 MIT
